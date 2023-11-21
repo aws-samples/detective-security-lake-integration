@@ -1,0 +1,383 @@
+---
+Conditions:
+  ShouldCreateAthenaResultsBucket:
+    Fn::Equals:
+    - Ref: AthenaResultsBucket
+    - ''
+Description: Before creating a stack, please check https://docs.aws.amazon.com/detective/latest/userguide/securitylake-integration.html#cloud-formation-template
+  and make sure the IAM principal you are using to create the stack has the required
+  permission, or you can pass a service role with the required permission to create
+  a stack.
+Outputs:
+  StackArn:
+    Value:
+      Ref: AWS::StackId
+Parameters:
+  AthenaResultsBucket:
+    Default: ''
+    Description: "(Optional) If you do not enter any value, this template will auto-generate
+      a Amazon S3 bucket. If you want to use your own bucket, enter a bucket name
+      to store the Athena query results. If you use your own bucket, make sure that
+      the bucket is in the same Region as in the Resource Share ARN."
+    Type: String
+  DTRegion:
+    Description: Your current Detective AWS Region. This field is pre-filled. Do not
+      change the value in this field.
+    Type: String
+  LakeFormationPrincipals:
+    Description: Enter the IAM principals (for example, IAM role ARN) that you want
+      to use to access Security Lake, separated by commas. You can only use the IAM
+      principals that you previously attached the IAM permissions to on Detective
+      console.
+    Type: CommaDelimitedList
+  ResourceShareArn:
+    Description: Your Resource Share ARN. This field is pre-filled. Do not change
+      the value in this field.
+    Type: String
+Resources:
+  AthenaResultsBucketPolicy:
+    Condition: ShouldCreateAthenaResultsBucket
+    Properties:
+      Bucket:
+        Ref: AthenaResultsBucketResource
+      PolicyDocument:
+        Statement:
+        - Action:
+          - s3:*
+          Condition:
+            Bool:
+              aws:SecureTransport: 'false'
+          Effect: Deny
+          Principal: "*"
+          Resource:
+          - Fn::Sub: "${AthenaResultsBucketResource.Arn}"
+          - Fn::Sub: "${AthenaResultsBucketResource.Arn}/*"
+        - Action:
+          - s3:*
+          Condition:
+            NumericLessThan:
+              s3:TlsVersion: 1.2
+          Effect: Deny
+          Principal: "*"
+          Resource:
+          - Fn::Sub: "${AthenaResultsBucketResource.Arn}"
+          - Fn::Sub: "${AthenaResultsBucketResource.Arn}/*"
+        Version: '2012-10-17'
+    Type: AWS::S3::BucketPolicy
+  AthenaResultsBucketResource:
+    Condition: ShouldCreateAthenaResultsBucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - BucketKeyEnabled: true
+          ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+      VersioningConfiguration:
+        Status: Enabled
+    Type: AWS::S3::Bucket
+    UpdateReplacePolicy: Retain
+  DetectiveSLIParameters:
+    DependsOn: ResourceShareAcceptor
+    Properties:
+      AthenaResultsBucket:
+        Fn::If:
+        - ShouldCreateAthenaResultsBucket
+        - Ref: AthenaResultsBucketResource
+        - Ref: AthenaResultsBucket
+      DTRegion:
+        Ref: DTRegion
+      ResourceShareArn:
+        Ref: ResourceShareArn
+      ServiceToken:
+        Fn::GetAtt: SsmParametersCustomResourceFunction.Arn
+      StackId:
+        Ref: AWS::StackId
+    Type: Custom::DetectiveSLIParameters
+  GlueDatabase:
+    DependsOn: ResourceShareAcceptor
+    Properties:
+      ResourceShareArn:
+        Ref: ResourceShareArn
+      ServiceToken:
+        Fn::GetAtt: GlueDatabaseCustomResourceFunction.Arn
+    Type: Custom::GlueDatabaseCreator
+  GlueDatabaseCustomResourceFunction:
+    Properties:
+      CodeUri:
+        Bucket:
+          Fn::Sub: detective-security-lake-integration-${AWS::Region}
+        Key: glue-database/glue-database.zip
+      Handler: index.handler
+      Role:
+        Fn::GetAtt: GlueDatabaseLambdaRole.Arn
+      Runtime: nodejs18.x
+      Timeout: 60
+    Type: AWS::Serverless::Function
+  GlueDatabaseLambdaRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+        Version: '2012-10-17'
+      Path: "/"
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action: ram:ListResources
+            Effect: Allow
+            Resource: "*"
+          - Action: glue:CreateDatabase
+            Effect: Allow
+            Resource:
+            - Fn::Sub:
+              - arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/amazon_security_lake_glue_db_${RegionUnderscored}
+              - RegionUnderscored:
+                  Fn::Join:
+                  - _
+                  - Fn::Split:
+                    - "-"
+                    - Ref: AWS::Region
+            - Fn::Sub: arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog
+          Version: '2012-10-17'
+        PolicyName: lambda
+    Type: AWS::IAM::Role
+  GlueDatabaseLogGroup:
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName:
+        Fn::Sub: "/aws/lambda/${GlueDatabaseCustomResourceFunction}"
+    Type: AWS::Logs::LogGroup
+    UpdateReplacePolicy: Delete
+  GlueDatabaseLogsAccessPolicy:
+    Properties:
+      PolicyDocument:
+        Statement:
+        - Action:
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Effect: Allow
+          Resource:
+            Fn::GetAtt: GlueDatabaseLogGroup.Arn
+        Version: '2012-10-17'
+      PolicyName: CloudwatchLogsAccess
+      RoleName:
+        Ref: GlueDatabaseLambdaRole
+    Type: AWS::IAM::RolePolicy
+  GlueTablesAndPermissions:
+    DependsOn: GlueDatabase
+    Properties:
+      LakeFormationPrincipals:
+        Ref: LakeFormationPrincipals
+      LambdaRoleArn:
+        Fn::GetAtt: GlueTablesLambdaRole.Arn
+      ResourceShareArn:
+        Ref: ResourceShareArn
+      ServiceToken:
+        Fn::GetAtt: GlueTablesCustomResourceFunction.Arn
+    Type: Custom::GlueTableConfiguration
+  GlueTablesCustomResourceFunction:
+    Properties:
+      CodeUri:
+        Bucket:
+          Fn::Sub: detective-security-lake-integration-${AWS::Region}
+        Key: glue-table/glue-table.zip
+      Handler: index.handler
+      Role:
+        Fn::GetAtt: GlueTablesLambdaRole.Arn
+      Runtime: nodejs18.x
+      Timeout: 60
+    Type: AWS::Serverless::Function
+  GlueTablesLambdaRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+        Version: '2012-10-17'
+      Path: "/"
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - lakeformation:GetDataLakeSettings
+            - lakeformation:GrantPermissions
+            - lakeformation:PutDataLakeSettings
+            - glue:GetDatabase
+            - ram:ListResources
+            Effect: Allow
+            Resource: "*"
+          Version: '2012-10-17'
+        PolicyName: lambda
+    Type: AWS::IAM::Role
+  GlueTablesLogGroup:
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName:
+        Fn::Sub: "/aws/lambda/${GlueTablesCustomResourceFunction}"
+    Type: AWS::Logs::LogGroup
+    UpdateReplacePolicy: Delete
+  GlueTablesLogsAccessPolicy:
+    Properties:
+      PolicyDocument:
+        Statement:
+        - Action:
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Effect: Allow
+          Resource:
+            Fn::GetAtt: GlueTablesLogGroup.Arn
+        Version: '2012-10-17'
+      PolicyName: CloudwatchLogsAccess
+      RoleName:
+        Ref: GlueTablesLambdaRole
+    Type: AWS::IAM::RolePolicy
+  ResourceShareAcceptor:
+    Properties:
+      ResourceShareArn:
+        Ref: ResourceShareArn
+      ServiceToken:
+        Fn::GetAtt: ResourceShareAcceptorCustomResourceFunction.Arn
+    Type: Custom::ResourceShareAcceptor
+  ResourceShareAcceptorCustomResourceFunction:
+    Properties:
+      CodeUri:
+        Bucket:
+          Fn::Sub: detective-security-lake-integration-${AWS::Region}
+        Key: resource-share-arn-acceptance/resource-share-arn-acceptance.zip
+      Handler: index.handler
+      Role:
+        Fn::GetAtt: ResourceShareAcceptorLambdaRole.Arn
+      Runtime: nodejs18.x
+      Timeout: 60
+    Type: AWS::Serverless::Function
+  ResourceShareAcceptorLambdaRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+        Version: '2012-10-17'
+      Path: "/"
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action: ram:GetResourceShareInvitations
+            Effect: Allow
+            Resource: "*"
+          - Action: ram:AcceptResourceShareInvitation
+            Condition:
+              StringEquals:
+                ram:ShareOwnerAccountId:
+                  Fn::Select:
+                  - 4
+                  - Fn::Split:
+                    - ":"
+                    - Ref: ResourceShareArn
+            Effect: Allow
+            Resource: "*"
+          Version: '2012-10-17'
+        PolicyName: lambda
+    Type: AWS::IAM::Role
+  ResourceShareAcceptorLogGroup:
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName:
+        Fn::Sub: "/aws/lambda/${ResourceShareAcceptorCustomResourceFunction}"
+    Type: AWS::Logs::LogGroup
+    UpdateReplacePolicy: Delete
+  ResourceShareAcceptorLogsAccessPolicy:
+    Properties:
+      PolicyDocument:
+        Statement:
+        - Action:
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Effect: Allow
+          Resource:
+            Fn::GetAtt: ResourceShareAcceptorLogGroup.Arn
+        Version: '2012-10-17'
+      PolicyName: CloudwatchLogsAccess
+      RoleName:
+        Ref: ResourceShareAcceptorLambdaRole
+    Type: AWS::IAM::RolePolicy
+  SsmParametersCustomResourceFunction:
+    Properties:
+      CodeUri:
+        Bucket:
+          Fn::Sub: detective-security-lake-integration-${AWS::Region}
+        Key: ssm-parameter/ssm-parameter.zip
+      Handler: index.handler
+      Role:
+        Fn::GetAtt: SsmParametersLambdaRole.Arn
+      Runtime: nodejs18.x
+      Timeout: 60
+    Type: AWS::Serverless::Function
+  SsmParametersLambdaRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+        Version: '2012-10-17'
+      Path: "/"
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action: ram:ListResources
+            Effect: Allow
+            Resource: "*"
+          - Action:
+            - ssm:GetParameter
+            - ssm:PutParameter
+            - ssm:DeleteParameters
+            Effect: Allow
+            Resource:
+            - Fn::Sub: arn:${AWS::Partition}:ssm:${DTRegion}:${AWS::AccountId}:parameter/Detective/SLI/ResourceShareArn
+            - Fn::Sub: arn:${AWS::Partition}:ssm:${DTRegion}:${AWS::AccountId}:parameter/Detective/SLI/S3Bucket
+            - Fn::Sub: arn:${AWS::Partition}:ssm:${DTRegion}:${AWS::AccountId}:parameter/Detective/SLI/TableNames
+            - Fn::Sub: arn:${AWS::Partition}:ssm:${DTRegion}:${AWS::AccountId}:parameter/Detective/SLI/DatabaseName
+            - Fn::Sub: arn:${AWS::Partition}:ssm:${DTRegion}:${AWS::AccountId}:parameter/Detective/SLI/StackId
+          Version: '2012-10-17'
+        PolicyName: lambda
+    Type: AWS::IAM::Role
+  SsmParametersLogGroup:
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName:
+        Fn::Sub: "/aws/lambda/${SsmParametersCustomResourceFunction}"
+    Type: AWS::Logs::LogGroup
+    UpdateReplacePolicy: Delete
+  SsmParametersLogsAccessPolicy:
+    Properties:
+      PolicyDocument:
+        Statement:
+        - Action:
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Effect: Allow
+          Resource:
+            Fn::GetAtt: SsmParametersLogGroup.Arn
+        Version: '2012-10-17'
+      PolicyName: CloudwatchLogsAccess
+      RoleName:
+        Ref: SsmParametersLambdaRole
+    Type: AWS::IAM::RolePolicy
+Transform: AWS::Serverless-2016-10-31
