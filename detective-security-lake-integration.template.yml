@@ -275,6 +275,9 @@ Resources:
       Policies:
       - PolicyDocument:
           Statement:
+          - Action: ram:ListResources
+            Effect: Allow
+            Resource: "*"
           - Action: ram:GetResourceShareInvitations
             Effect: Allow
             Resource: "*"
