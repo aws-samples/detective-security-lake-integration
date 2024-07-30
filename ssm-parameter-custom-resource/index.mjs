@@ -42,7 +42,7 @@ export async function handler(event, context) {
     } else if (event.RequestType === "Delete") {
         [result, reason] = await deleteParameters(event, context);
     } else {
-        reason = `Received unknown RequestType ${event.RequestType}.`;
+        reason = "Unrecognized cloudformation request type received. This custom resource only supports creation and deletion.";
         console.error(reason);
         result = "FAILED";
     }

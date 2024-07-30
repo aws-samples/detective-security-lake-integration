@@ -37,7 +37,7 @@ export async function handler(event, context) {
         // For Delete requests, immediately send a SUCCESS response.
         result = "SUCCESS";
     } else {
-        reason = `Received unknown RequestType ${event.RequestType}.`;
+        reason = "Unrecognized cloudformation request type received. This custom resource only supports creation and deletion.";
         console.error(reason);
         result = "FAILED";
     }
