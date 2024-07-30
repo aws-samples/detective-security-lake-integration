@@ -34,7 +34,7 @@ export async function handler(event, context) {
         physicalResourceId = event.PhysicalResourceId;
         result = "SUCCESS";
     } else {
-        reason = `Received unknown RequestType ${event.RequestType}.`;
+        reason = "Unrecognized cloudformation request type received. This custom resource only supports creation and deletion.";
         console.error(reason);
         result = "FAILED";
     }
