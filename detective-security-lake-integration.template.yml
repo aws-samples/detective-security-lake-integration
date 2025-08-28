@@ -111,7 +111,7 @@ Resources:
       Handler: index.handler
       Role:
         Fn::GetAtt: GlueDatabaseLambdaRole.Arn
-      Runtime: nodejs18.x
+      Runtime: nodejs22.x
       Timeout: 60
     Type: AWS::Serverless::Function
   GlueDatabaseLambdaRole:
@@ -190,7 +190,7 @@ Resources:
       Handler: index.handler
       Role:
         Fn::GetAtt: GlueTablesLambdaRole.Arn
-      Runtime: nodejs18.x
+      Runtime: nodejs22.x
       Timeout: 60
     Type: AWS::Serverless::Function
   GlueTablesLambdaRole:
@@ -257,7 +257,7 @@ Resources:
       Handler: index.handler
       Role:
         Fn::GetAtt: ResourceShareAcceptorLambdaRole.Arn
-      Runtime: nodejs18.x
+      Runtime: nodejs22.x
       Timeout: 60
     Type: AWS::Serverless::Function
   ResourceShareAcceptorLambdaRole:
@@ -326,7 +326,7 @@ Resources:
       Handler: index.handler
       Role:
         Fn::GetAtt: SsmParametersLambdaRole.Arn
-      Runtime: nodejs18.x
+      Runtime: nodejs22.x
       Timeout: 60
     Type: AWS::Serverless::Function
   SsmParametersLambdaRole:
